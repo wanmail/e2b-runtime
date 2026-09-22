@@ -1,0 +1,33 @@
+# Local HBONE mock: Envoy (mTLS + HTTP/2 CONNECT) → capture (full HTTP dump).
+#
+#   ./certs/gen.sh
+#   docker compose up --build -d
+#   go run ../../cmd/hbone-smoke
+#
+# Envoy access log shows CONNECT + peer SPIFFE URI.
+# Capture container logs show the full guest HTTP request.
+name: egress-hbone-mock
+
+services:
+  capture:
+    build: ./capture
+    ports:
+      - "18080:8080"
+
+  envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    depends_on:
+      - capture
+    ports:
+      - "15008:15008"
+      - "9901:9901"
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./certs/tunnel-ca.crt:/etc/certs/tunnel-ca.crt:ro
+      - ./certs/gateway.crt:/etc/certs/gateway.crt:ro
+      - ./certs/gateway.key:/etc/certs/gateway.key:ro
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info

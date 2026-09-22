@@ -357,6 +357,11 @@ var (
 
 	BYOPProxyEnabledFlag = NewBoolFlag("byop-proxy-enabled", env.IsDevelopment())
 
+	// EgressHBONETunnelFlag sends IAM sandboxes' admitted TCP to the platform
+	// egress gateway over HTTP/2 CONNECT + mTLS (HBONE subset). Off keeps
+	// DialProxy splice. Requires EGRESS_GATEWAY_ADDR and a tunnel CA on the node.
+	EgressHBONETunnelFlag = NewBoolFlag("egress-hbone-tunnel", false)
+
 	// EgressProxyInterceptTracingFlag turns on connection, request and upstream
 	// spans for a sandbox's TLS-intercepted egress. Target the sandbox or team
 	// context; the fallback keeps interception at its existing transform span.

@@ -247,6 +247,9 @@ Key mechanisms (all under `pkg/sandbox/`):
   (with SNI/Host-inspecting TCP firewall for domain allow/deny lists). Slots are pooled and
   reused; slot indexes are allocated locally against the node's netns state (leftover
   namespaces from a previous run are torn down by startup reclaim).
+  Proposed: sandboxes with `iam.tokens` tunnel admitted TCP to a platform Envoy via HTTP/2
+  CONNECT and a per-execution SPIFFE client cert (HBONE subset). L7 JWT stays on the gateway.
+  Design: [egress-hbone.md](./egress-hbone.md).
 - **Sandbox proxy** (:5007, `pkg/proxy/`): reverse-proxies incoming traffic from client-proxy to
   the sandbox's slot IP and requested port over HTTP or configured HTTPS, enforcing per-sandbox
   traffic access tokens. HTTPS backends may use self-signed certificates.

@@ -1,0 +1,81 @@
+# Local mock: HBONE-style HTTP/2 CONNECT over mTLS.
+# After CONNECT, Envoy L4-forwards the stream to the capture service so the
+# full guest HTTP request is visible in capture logs. Envoy access logs the
+# CONNECT line with the peer SPIFFE URI SAN.
+admin:
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }
+
+static_resources:
+  listeners:
+    - name: hbone
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 15008 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                alpn_protocols: ["h2"]
+                tls_certificates:
+                  - certificate_chain: { filename: /etc/certs/gateway.crt }
+                    private_key: { filename: /etc/certs/gateway.key }
+                validation_context:
+                  trusted_ca: { filename: /etc/certs/tunnel-ca.crt }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: hbone
+                codec_type: HTTP2
+                http2_protocol_options:
+                  allow_connect: true
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          msg: "hbone_connect"
+                          method: "%REQ(:METHOD)%"
+                          authority: "%REQ(:AUTHORITY)%"
+                          peer_uri_san: "%DOWNSTREAM_PEER_URI_SAN%"
+                          response_code: "%RESPONSE_CODE%"
+                          response_flags: "%RESPONSE_FLAGS%"
+                          bytes_received: "%BYTES_RECEIVED%"
+                          bytes_sent: "%BYTES_SENT%"
+                          duration_ms: "%DURATION%"
+
+
+                route_config:
+                  name: connect_routes
+                  virtual_hosts:
+                    - name: connect
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            connect_matcher: {}
+                          route:
+                            cluster: capture
+                            upgrade_configs:
+                              - upgrade_type: CONNECT
+                                connect_config: {}
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: capture
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 2s
+      load_assignment:
+        cluster_name: capture
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: capture, port_value: 8080 }

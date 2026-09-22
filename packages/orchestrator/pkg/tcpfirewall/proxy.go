@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/connlimit"
@@ -39,6 +40,7 @@ type Proxy struct {
 	otherPort uint16 // For all other ports - CIDR-only, no protocol inspection
 
 	egressTOS network.EgressTOS
+	tunnel    *egresstunnel.Client
 
 	proxyRules []proxyRule
 	proxy      *tcpproxy.Proxy
@@ -68,10 +70,19 @@ func New(logger logger.Logger, networkConfig network.Config, sandboxes *sandbox.
 	return p
 }
 
+// SetTunnel installs the optional HBONE client. Nil disables tunneling.
+func (p *Proxy) SetTunnel(t *egresstunnel.Client) {
+	p.tunnel = t
+}
+
 func (p *Proxy) OnInsert(_ context.Context, _ *sandbox.Sandbox) {}
 
 // OnStopping is called when a sandbox leaves the live registry.
-func (p *Proxy) OnStopping(_ context.Context, _ *sandbox.Sandbox) {}
+func (p *Proxy) OnStopping(_ context.Context, sbx *sandbox.Sandbox) {
+	if p.tunnel != nil {
+		p.tunnel.Forget(sbx.Runtime.ExecutionID)
+	}
+}
 
 func (p *Proxy) OnNetworkRelease(_ context.Context, sbx *sandbox.Sandbox) {
 	p.limiter.Remove(sbx.LifecycleID)
@@ -110,6 +121,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		sandboxes:    p.sandboxes,
 		featureFlags: p.featureFlags,
 		egressTOS:    p.egressTOS,
+		tunnel:       p.tunnel,
 	}
 
 	// HTTP listener (port 80 traffic): inspect Host header for domain allowlist
@@ -217,6 +229,7 @@ type egressConn struct {
 	tos     int
 	logger  logger.Logger
 	metrics *Metrics
+	tunnel  *egresstunnel.Client
 }
 
 // upstreamAddr is the destination as a dial target.
@@ -237,6 +250,7 @@ type proxyDeps struct {
 	sandboxes    *sandbox.Map
 	featureFlags *featureflags.Client
 	egressTOS    network.EgressTOS
+	tunnel       *egresstunnel.Client
 }
 
 var _ tcpproxy.Target = (*connectionHandler)(nil)
@@ -324,5 +338,6 @@ func (t *connectionHandler) HandleConn(conn net.Conn) {
 		tos:      t.deps.egressTOS.For(sbx.Runtime.SandboxType.EgressClass()),
 		logger:   sbxLogger,
 		metrics:  t.deps.metrics,
+		tunnel:   t.deps.tunnel,
 	})
 }

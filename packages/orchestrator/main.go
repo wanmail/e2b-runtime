@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/launchdarkly/go-sdk-common/v3/ldvalue"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/factories"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/tcpfirewall"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/version"
@@ -60,9 +62,45 @@ func defaultEgressFactory(_ context.Context, deps *factories.Deps) (*factories.E
 		deps.FeatureFlags,
 	)
 
+	tunnel, err := newEgressTunnel(deps)
+	if err != nil {
+		return nil, err
+	}
+	fw.SetTunnel(tunnel)
+
 	return &factories.EgressSetup{
 		Proxy: fw,
 		Start: fw.Start,
-		Close: fw.Close,
+		Close: func(ctx context.Context) error {
+			var errs []error
+			if tunnel != nil {
+				errs = append(errs, tunnel.Close())
+			}
+			errs = append(errs, fw.Close(ctx))
+
+			return errors.Join(errs...)
+		},
 	}, nil
+}
+
+func newEgressTunnel(deps *factories.Deps) (*egresstunnel.Client, error) {
+	netCfg := deps.Config.NetworkConfig
+	if netCfg.EgressGatewayAddr == "" {
+		return nil, nil
+	}
+	if netCfg.EgressTunnelCACert == "" || netCfg.EgressTunnelCAKey == "" {
+		return nil, errors.New("EGRESS_GATEWAY_ADDR is set but EGRESS_TUNNEL_CA_CERT/KEY are missing")
+	}
+
+	signer, err := egresstunnel.LoadSigner(netCfg.EgressTunnelCACert, netCfg.EgressTunnelCAKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return egresstunnel.New(egresstunnel.Config{
+		GatewayAddr: netCfg.EgressGatewayAddr,
+		TrustDomain: netCfg.EgressSPIFFETrustDomain,
+		GatewayCA:   netCfg.EgressGatewayCACert,
+		Signer:      signer,
+	}, deps.FeatureFlags, deps.Logger)
 }

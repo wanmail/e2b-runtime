@@ -14,8 +14,10 @@ import (
 	"github.com/inetaf/tcpproxy"
 	"go.uber.org/zap"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
+	"github.com/e2b-dev/infra/packages/shared/pkg/sandboxtypes"
 )
 
 const (
@@ -74,6 +76,11 @@ func domainHandler(ctx context.Context, c egressConn) {
 		return
 	}
 
+	authority := egresstunnel.Authority(hostname, c.dstIP, c.dstPort)
+	if tunnelAdmitted(ctx, c, authority, matchType) {
+		return
+	}
+
 	c.metrics.RecordDecision(ctx, DecisionAllowed, c.protocol, matchType)
 
 	// When allowed by domain match, dial the hostname directly (not the sandbox's resolved IP).
@@ -110,9 +117,45 @@ func cidrOnlyHandler(ctx context.Context, c egressConn) {
 		return
 	}
 
+	if tunnelAdmitted(ctx, c, egresstunnel.Authority("", c.dstIP, c.dstPort), matchType) {
+		return
+	}
+
 	c.metrics.RecordDecision(ctx, DecisionAllowed, c.protocol, matchType)
 
 	proxy(ctx, c, c.upstreamAddr())
+}
+
+func tunnelAdmitted(ctx context.Context, c egressConn, authority string, matchType MatchType) bool {
+	if c.tunnel == nil || !c.tunnel.ShouldTunnel(ctx, workloadOf(c.sbx)) {
+		return false
+	}
+
+	c.metrics.RecordDecision(ctx, DecisionTunneled, c.protocol, matchType)
+	tracker := c.metrics.TrackConnection(c.protocol)
+	defer tracker.Close(ctx)
+
+	if err := c.tunnel.Handle(ctx, c.conn, workloadOf(c.sbx), authority, c.tos); err != nil {
+		c.logger.Error(ctx, "egress HBONE tunnel failed", zap.Error(err), zap.String("authority", authority))
+		c.metrics.RecordError(ctx, ErrorTypeTunnel, c.protocol)
+	}
+
+	return true
+}
+
+func workloadOf(sbx *sandbox.Sandbox) egresstunnel.Workload {
+	hasIAM := false
+	if sbx.APIStoredConfig != nil && len(sbx.APIStoredConfig.GetIam().GetTokens()) > 0 {
+		hasIAM = true
+	}
+
+	return egresstunnel.Workload{
+		TeamID:      sbx.Runtime.TeamID,
+		SandboxID:   sbx.Runtime.SandboxID,
+		ExecutionID: sbx.Runtime.ExecutionID,
+		HasIAM:      hasIAM,
+		IsBuild:     sbx.Runtime.SandboxType == sandboxtypes.SandboxTypeBuild,
+	}
 }
 
 // proxy proxies the connection to the upstream address.

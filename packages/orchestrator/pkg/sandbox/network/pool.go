@@ -94,6 +94,14 @@ type Config struct {
 
 	// NetworkVersion selects v1 (iptables per-sandbox) or v2 (nftables, host sets).
 	NetworkVersion int `env:"NETWORK_VERSION" envDefault:"1"`
+
+	// HBONE tunnel to a platform Envoy egress gateway. Empty GatewayAddr disables
+	// the client even if the feature flag is on.
+	EgressGatewayAddr       string `env:"EGRESS_GATEWAY_ADDR" envDefault:""`
+	EgressSPIFFETrustDomain string `env:"EGRESS_SPIFFE_TRUST_DOMAIN" envDefault:"e2b.local"`
+	EgressTunnelCACert      string `env:"EGRESS_TUNNEL_CA_CERT" envDefault:""`
+	EgressTunnelCAKey       string `env:"EGRESS_TUNNEL_CA_KEY" envDefault:""`
+	EgressGatewayCACert     string `env:"EGRESS_GATEWAY_CA_CERT" envDefault:""`
 }
 
 const maxDSCP = 63 // DSCP is the top 6 bits of the IPv4 TOS / IPv6 traffic-class byte.

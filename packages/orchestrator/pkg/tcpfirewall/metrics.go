@@ -27,8 +27,9 @@ const (
 type Decision string
 
 const (
-	DecisionAllowed Decision = "allowed"
-	DecisionBlocked Decision = "blocked"
+	DecisionAllowed  Decision = "allowed"
+	DecisionBlocked  Decision = "blocked"
+	DecisionTunneled Decision = "tunneled"
 )
 
 // MatchType represents how the traffic was matched.
@@ -51,6 +52,7 @@ const (
 	ErrorTypeConnectionMeta    ErrorType = "connection_meta"
 	ErrorTypeResolvedIPBlocked ErrorType = "resolved_ip_blocked"
 	ErrorTypeLimitExceeded     ErrorType = "limit_exceeded"
+	ErrorTypeTunnel            ErrorType = "tunnel"
 )
 
 // Metrics holds all TCP firewall metrics.
