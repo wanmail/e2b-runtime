@@ -29,6 +29,12 @@ func main() {
 }
 
 func applyTestFlagOverrides() {
+	// Local compose / soak: when a gateway is configured, turn the tunnel on
+	// without LaunchDarkly (offline store keeps the flag's false fallback).
+	if os.Getenv("EGRESS_GATEWAY_ADDR") != "" {
+		featureflags.OverrideBoolFlag(featureflags.EgressHBONETunnelFlag, true)
+	}
+
 	// "default" (the harness input default) means the flag's own fallback —
 	// dedup disabled — not an override that quietly enables it modeless.
 	if mode := os.Getenv("TESTS_MEMFILE_DIFF_DEDUP_MODE"); mode != "" && mode != "default" {
@@ -97,10 +103,16 @@ func newEgressTunnel(deps *factories.Deps) (*egresstunnel.Client, error) {
 		return nil, err
 	}
 
+	serverName := os.Getenv("EGRESS_GATEWAY_SERVER_NAME")
+	if serverName == "" {
+		serverName = "localhost"
+	}
+
 	return egresstunnel.New(egresstunnel.Config{
 		GatewayAddr: netCfg.EgressGatewayAddr,
 		TrustDomain: netCfg.EgressSPIFFETrustDomain,
 		GatewayCA:   netCfg.EgressGatewayCACert,
+		ServerName:  serverName,
 		Signer:      signer,
 	}, deps.FeatureFlags, deps.Logger)
 }

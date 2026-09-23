@@ -28,6 +28,7 @@ import (
 	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/cmd/internal/cmdutil"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/metrics"
@@ -42,6 +43,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process"
+	pb "github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/sandboxtypes"
@@ -416,6 +418,7 @@ type runner struct {
 	factory     *sandbox.Factory
 	tmpl        template.Template
 	sbxConfig   *sandbox.Config
+	apiConfig   *pb.SandboxConfig
 	buildID     string
 	cache       *template.Cache
 	coldStart   bool
@@ -458,10 +461,10 @@ func (r *runner) startSandbox(ctx context.Context, runtime sandboxtypes.RuntimeM
 			})
 		}
 
-		return r.factory.RebootSandbox(ctx, r.tmpl, r.sbxConfig, runtime, end, nil, false, r.forceReboot, nil, procOpts...)
+		return r.factory.RebootSandbox(ctx, r.tmpl, r.sbxConfig, runtime, end, r.apiConfig, false, r.forceReboot, nil, procOpts...)
 	}
 
-	return r.factory.ResumeSandbox(ctx, r.tmpl, r.sbxConfig, runtime, start, end, nil)
+	return r.factory.ResumeSandbox(ctx, r.tmpl, r.sbxConfig, runtime, start, end, r.apiConfig)
 }
 
 func (r *runner) resumeOnce(ctx context.Context, iter int) (time.Duration, error) {
@@ -1257,6 +1260,20 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 		fmt.Println("🔧 Starting TCP firewall...")
 	}
 	tcpFw := tcpfirewall.New(l, config.NetworkConfig, sandboxes, tel.MeterProvider, flags)
+	tunnel, err := newResumeEgressTunnel(config.NetworkConfig, flags, l)
+	if err != nil {
+		return err
+	}
+	tcpFw.SetTunnel(tunnel)
+	defer func() {
+		if tunnel != nil {
+			_ = tunnel.Close()
+		}
+	}()
+	if tunnel != nil {
+		featureflags.OverrideBoolFlag(featureflags.EgressHBONETunnelFlag, true)
+		fmt.Println("🔐 HBONE tunnel enabled →", config.NetworkConfig.EgressGatewayAddr)
+	}
 	go tcpFw.Start(ctx)
 	defer tcpFw.Close(context.WithoutCancel(ctx))
 
@@ -1269,7 +1286,7 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 		noEgress = true
 	}
 
-	var egressProxy network.EgressProxy = network.NoopEgressProxy{}
+	var egressProxy network.EgressProxy = tcpFw
 	if noEgress {
 		egressProxy = noEgressProxy{}
 	}
@@ -1417,6 +1434,7 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 		config:      config.BuilderConfig,
 		storage:     persistence,
 		sbxConfig:   sbxCfg,
+		apiConfig:   hboneIAMConfig(config.NetworkConfig.EgressGatewayAddr),
 
 		gdbOrigVersionsDir: gdbOrigVersionsDir,
 	}
@@ -1794,4 +1812,40 @@ func (noEgressProxy) OnSlotCreate(s *network.Slot, _ *iptables.IPTables) error {
 
 		return nil
 	})
+}
+
+func newResumeEgressTunnel(netCfg network.Config, flags *featureflags.Client, log logger.Logger) (*egresstunnel.Client, error) {
+	if netCfg.EgressGatewayAddr == "" {
+		return nil, nil
+	}
+	if netCfg.EgressTunnelCACert == "" || netCfg.EgressTunnelCAKey == "" {
+		return nil, errors.New("EGRESS_GATEWAY_ADDR is set but EGRESS_TUNNEL_CA_CERT/KEY are missing")
+	}
+
+	signer, err := egresstunnel.LoadSigner(netCfg.EgressTunnelCACert, netCfg.EgressTunnelCAKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return egresstunnel.New(egresstunnel.Config{
+		GatewayAddr: netCfg.EgressGatewayAddr,
+		TrustDomain: netCfg.EgressSPIFFETrustDomain,
+		GatewayCA:   netCfg.EgressGatewayCACert,
+		Signer:      signer,
+		ServerName:  "localhost",
+	}, flags, log)
+}
+
+func hboneIAMConfig(gatewayAddr string) *pb.SandboxConfig {
+	if gatewayAddr == "" {
+		return nil
+	}
+
+	return &pb.SandboxConfig{
+		Iam: &pb.SandboxIam{
+			Tokens: map[string]*pb.SandboxIamToken{
+				"default": {Audience: "egress-e2e", TokenType: "urn:ietf:params:oauth:token-type:jwt"},
+			},
+		},
+	}
 }

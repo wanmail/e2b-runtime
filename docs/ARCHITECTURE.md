@@ -249,7 +249,8 @@ Key mechanisms (all under `pkg/sandbox/`):
   namespaces from a previous run are torn down by startup reclaim).
   Proposed: sandboxes with `iam.tokens` tunnel admitted TCP to a platform Envoy via HTTP/2
   CONNECT and a per-execution SPIFFE client cert (HBONE subset). L7 JWT stays on the gateway.
-  Design: [egress-hbone.md](./egress-hbone.md).
+  Design: [egress-hbone.md](./egress-hbone.md). Local API e2e:
+  `packages/orchestrator/dev/egresstunnel/e2e/README.md`.
 - **Sandbox proxy** (:5007, `pkg/proxy/`): reverse-proxies incoming traffic from client-proxy to
   the sandbox's slot IP and requested port over HTTP or configured HTTPS, enforcing per-sandbox
   traffic access tokens. HTTPS backends may use self-signed certificates.

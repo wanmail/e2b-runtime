@@ -1,0 +1,14 @@
+# Local HBONE soak: tunnel IAM sandboxes to the mock Envoy on :15008.
+# Requires packages/orchestrator/dev/egresstunnel compose stack (certs + envoy).
+# Certs must exist on the host at the paths below (nsenter -t 1); use
+# packages/orchestrator/dev/egresstunnel/e2e/mock-up.sh
+# Full API e2e: packages/orchestrator/dev/egresstunnel/e2e/README.md
+services:
+  orchestrator:
+    environment:
+      EGRESS_GATEWAY_ADDR: "127.0.0.1:15008"
+      EGRESS_GATEWAY_SERVER_NAME: "localhost"
+      EGRESS_SPIFFE_TRUST_DOMAIN: "e2b.local"
+      EGRESS_TUNNEL_CA_CERT: "/var/lib/e2b/egress-certs/tunnel-ca.crt"
+      EGRESS_TUNNEL_CA_KEY: "/var/lib/e2b/egress-certs/tunnel-ca.key"
+      EGRESS_GATEWAY_CA_CERT: "/var/lib/e2b/egress-certs/gateway-ca.crt"

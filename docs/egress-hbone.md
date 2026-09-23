@@ -254,8 +254,16 @@ Integration (httptest HTTP/2 server with `require_client_cert`):
 - Wrong CA: guest conn closed, no origin dial
 - Gateway down: fail closed
 
-Do not hit a real Envoy in unit CI. A later soak can point
-`EGRESS_GATEWAY_ADDR` at a local Envoy with CONNECT-only.
+Do not hit a real Envoy in unit CI. Local soak (mock Envoy on `:15008`) is
+documented in `packages/orchestrator/dev/egresstunnel/e2e/README.md`:
+
+1. `go run ./cmd/hbone-smoke` — client only
+2. `go test ./pkg/egresstunnel/ -run TestE2E_SandboxRequestToMockEnvoy` — Alpine guest
+3. `sudo go test ./pkg/tcpfirewall/ -run TestE2E_SandboxHTTPToMockEnvoy` — netns + REDIRECT
+4. `dev/egresstunnel/e2e/run.sh` — API template build + `POST /sandboxes` with
+   `iam.tokens`, Firecracker guest curl, Envoy `CONNECT` + URI SAN SPIFFE
+
+SPIFFE is the leaf **URI SAN** (see §5), logged by Envoy as `peer_uri_san`.
 
 ## 12. Envoy peer contract (out of this repo)
 

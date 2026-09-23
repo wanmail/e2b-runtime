@@ -4,6 +4,9 @@ Verify the orchestrator `egresstunnel` client against a Docker Envoy that
 terminates HTTP/2 CONNECT over mTLS and forwards the stream to a capture
 service that prints the **full guest HTTP request**.
 
+Full ladder (smoke → go tests → **API template + IAM sandbox**) is in
+[e2e/README.md](./e2e/README.md). `e2e/run.sh` is the control-plane e2e.
+
 ## Quick start
 
 ```bash
@@ -20,6 +23,9 @@ go test ./pkg/egresstunnel/ -count=1 -timeout 2m -run TestE2E_SandboxRequestToMo
 
 # optional (root + CGO): real netns slot + tcpfirewall REDIRECT
 # sudo go test ./pkg/tcpfirewall/ -count=1 -timeout 2m -run TestE2E_SandboxHTTPToMockEnvoy
+
+# API e2e (embed compose + Firecracker + POST /sandboxes iam.tokens)
+# ./e2e/run.sh
 
 # inspect
 docker compose -f dev/egresstunnel/docker-compose.yml logs envoy capture
