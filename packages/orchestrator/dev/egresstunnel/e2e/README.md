@@ -131,31 +131,9 @@ hbone-e2e: pass
   capture POST /hbone-api-e2e marker=hbone-api-e2e-<unix>
 ```
 
-## 5. Agent-gateway e2e (credential injection)
-
-Replaces the capture mock with **agent-gateway** local Decision + Envoy + echo
-and `cmd/hbone-ingress` on `:15008`:
-
-```
-sandbox curl Host: api.github.com
-  → E2B HBONE (SPIFFE client cert)
-  → hbone-ingress (mint WI JWT from SPIFFE sandbox id)
-  → Envoy :18080 ext_authz → Decision (chain B)
-  → echo :18081  (Authorization: Bearer ghs_mock)
-```
-
-```bash
-SKIP_INSTALL=1 ./run-gateway.sh
-# pieces: ./gateway-up.sh && ./api-gateway-e2e.sh
-# down:   $AGENT_GATEWAY_ROOT/scripts/e2e-e2b-up.sh --down
-```
-
-Guest sends a normal request (no Authorization). The echoed body must contain
-`Authorization: Bearer ghs_mock`.
-
 ### Fail-closed
 
-If IAM is set but the gateway/tunnel cannot be established, guest curl fails
+If IAM is set but the tunnel cannot be established, guest curl fails
 (timeout / connection reset). It must not reach the public origin.
 
 Build VMs (`SandboxType != sandbox`, no `iam`) stay on DialProxy and must not

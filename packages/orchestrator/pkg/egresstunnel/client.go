@@ -35,10 +35,22 @@ type Config struct {
 	TrustDomain string
 	GatewayCA   string
 	DialTimeout time.Duration
-	ServerName  string
-	RootCAs     *x509.CertPool
-	Signer      *Signer
+	// ServerName is the fixed TLS SNI for DialModeConnect. Ignored for DialModeHTTPS
+	// (SNI is taken from the guest Host / CONNECT authority).
+	ServerName string
+	RootCAs    *x509.CertPool
+	Signer     *Signer
+	// DialMode is DialModeConnect (HTTP/2 CONNECT over mTLS) or DialModeHTTPS
+	// (origin-SNI HTTPS over mTLS, no CONNECT; guest HTTP spliced onto the TLS conn).
+	DialMode string
 }
+
+const (
+	// DialModeConnect is HTTP/2 CONNECT over mTLS (default; Istio-style HBONE).
+	DialModeConnect = "connect"
+	// DialModeHTTPS is origin-SNI HTTPS over mTLS (L7 intercept; no CONNECT).
+	DialModeHTTPS = "https"
+)
 
 // Client opens HTTP/2 CONNECT tunnels to a platform Envoy with a per-execution client cert.
 type Client struct {
@@ -59,13 +71,21 @@ func New(cfg Config, flags *featureflags.Client, log logger.Logger) (*Client, er
 	if cfg.DialTimeout == 0 {
 		cfg.DialTimeout = defaultDialTimeout
 	}
+	switch cfg.DialMode {
+	case "", DialModeConnect:
+		cfg.DialMode = DialModeConnect
+	case DialModeHTTPS:
+		// ok
+	default:
+		return nil, fmt.Errorf("unknown DialMode %q (want %q or %q)", cfg.DialMode, DialModeConnect, DialModeHTTPS)
+	}
 
 	signer := cfg.Signer
 	if signer == nil {
 		return nil, errors.New("tunnel CA signer is required")
 	}
 
-	if cfg.ServerName == "" {
+	if cfg.DialMode == DialModeConnect && cfg.ServerName == "" {
 		host, _, err := net.SplitHostPort(cfg.GatewayAddr)
 		if err != nil {
 			host = cfg.GatewayAddr
@@ -164,11 +184,11 @@ func (c *Client) Close() error {
 	return c.pool.closeAll()
 }
 
-func clientTLSConfig(cfg Config, spiffeID string) *tls.Config {
+func clientTLSConfig(cfg Config, spiffeID, serverName string, nextProtos []string) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		NextProtos: []string{"h2"},
-		ServerName: cfg.ServerName,
+		NextProtos: nextProtos,
+		ServerName: serverName,
 		RootCAs:    cfg.RootCAs,
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			return cfg.Signer.Certificate(spiffeID)

@@ -107,12 +107,18 @@ func newEgressTunnel(deps *factories.Deps) (*egresstunnel.Client, error) {
 	if serverName == "" {
 		serverName = "localhost"
 	}
+	dialMode := os.Getenv("EGRESS_DIAL_MODE")
+	if dialMode == egresstunnel.DialModeHTTPS {
+		// Origin SNI comes from guest Host / authority; fixed SNI is unused.
+		serverName = ""
+	}
 
 	return egresstunnel.New(egresstunnel.Config{
 		GatewayAddr: netCfg.EgressGatewayAddr,
 		TrustDomain: netCfg.EgressSPIFFETrustDomain,
 		GatewayCA:   netCfg.EgressGatewayCACert,
 		ServerName:  serverName,
+		DialMode:    dialMode,
 		Signer:      signer,
 	}, deps.FeatureFlags, deps.Logger)
 }

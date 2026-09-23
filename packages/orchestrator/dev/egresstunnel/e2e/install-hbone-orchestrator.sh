@@ -4,6 +4,7 @@
 #
 # SKIP_BUILD=1  reuse the binary already at /tmp/orchestrator-hbone or ORCH_BIN
 # SKIP_RECREATE=1  copy binary/certs only
+# SKIP_MOCK=1     skip mock-up (certs already on CERT_DST)
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
@@ -15,7 +16,9 @@ need_cmd go
 OVERRIDE="$COMPOSE_DIR/compose.override.yaml"
 [ -f "$OVERRIDE" ] || die "missing $OVERRIDE (EGRESS_* for the live orchestrator)"
 
-"$E2E_DIR/mock-up.sh"
+if [ "${SKIP_MOCK:-0}" != "1" ]; then
+  "$E2E_DIR/mock-up.sh"
+fi
 
 STAGED="${STAGED_ORCH_BIN:-/tmp/orchestrator-hbone}"
 
@@ -56,7 +59,10 @@ wait_http "http://127.0.0.1:5008/health" 90
 # Confirm the live process got EGRESS_GATEWAY_ADDR (nsenter host pid).
 pid="$(pgrep -af '/var/lib/e2b/bin/orchestrator' | grep -v grep | awk '{print $1}' | head -1 || true)"
 [ -n "$pid" ] || die "orchestrator pid not found"
-if ! sudo_cmd tr '\0' '\n' < "/proc/$pid/environ" | grep -q '^EGRESS_GATEWAY_ADDR='; then
+environ="$(sudo_cmd cat "/proc/$pid/environ" | tr '\0' '\n')"
+if ! printf '%s\n' "$environ" | grep -q '^EGRESS_GATEWAY_ADDR='; then
   die "orchestrator pid $pid has no EGRESS_GATEWAY_ADDR (is compose.override.yaml applied?)"
 fi
-log "orchestrator pid $pid healthy with EGRESS_* (gateway 127.0.0.1:15008)"
+gw="$(printf '%s\n' "$environ" | grep '^EGRESS_GATEWAY_ADDR=' | head -1 || true)"
+mode="$(printf '%s\n' "$environ" | grep '^EGRESS_DIAL_MODE=' | head -1 || true)"
+log "orchestrator pid $pid healthy with EGRESS_* (${gw:-EGRESS_GATEWAY_ADDR=?} ${mode:-EGRESS_DIAL_MODE=})"

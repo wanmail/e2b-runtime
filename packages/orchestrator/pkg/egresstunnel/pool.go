@@ -33,12 +33,54 @@ func newConnPool(cfg Config) *connPool {
 }
 
 func (p *connPool) connect(ctx context.Context, executionID, spiffeID, authority string, tos int) (net.Conn, error) {
+	if p.cfg.DialMode == DialModeHTTPS {
+		return p.dialHTTPS(ctx, spiffeID, authority, tos)
+	}
+
 	s, err := p.session(ctx, executionID, spiffeID, tos)
 	if err != nil {
 		return nil, err
 	}
 
 	return s.openCONNECT(ctx, authority)
+}
+
+func (p *connPool) dialHTTPS(ctx context.Context, spiffeID, authority string, tos int) (net.Conn, error) {
+	serverName := authorityHost(authority)
+	if serverName == "" {
+		return nil, errors.New("https dial: empty authority host for SNI")
+	}
+
+	dialer := &net.Dialer{
+		Timeout: p.cfg.DialTimeout,
+		Control: func(_, _ string, rawConn syscall.RawConn) error {
+			return markDSCP(rawConn, tos)
+		},
+	}
+	raw, err := dialer.DialContext(ctx, "tcp", p.cfg.GatewayAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial gateway: %w", err)
+	}
+
+	// HTTP/1.1 only: guest plaintext HTTP is spliced onto the TLS conn.
+	// Offering h2 as well would let the peer pick h2 and break splice.
+	tlsConn := tls.Client(raw, clientTLSConfig(p.cfg, spiffeID, serverName, []string{"http/1.1"}))
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+
+		return nil, fmt.Errorf("gateway tls: %w", err)
+	}
+
+	return tlsConn, nil
+}
+
+func authorityHost(authority string) string {
+	host := authority
+	if h, _, err := net.SplitHostPort(authority); err == nil {
+		host = h
+	}
+
+	return host
 }
 
 func (p *connPool) session(ctx context.Context, executionID, spiffeID string, tos int) (*session, error) {
@@ -84,7 +126,7 @@ func (p *connPool) dial(ctx context.Context, spiffeID string, tos int) (*session
 		return nil, fmt.Errorf("dial gateway: %w", err)
 	}
 
-	tlsConn := tls.Client(raw, clientTLSConfig(p.cfg, spiffeID))
+	tlsConn := tls.Client(raw, clientTLSConfig(p.cfg, spiffeID, p.cfg.ServerName, []string{"h2"}))
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		raw.Close()
 
