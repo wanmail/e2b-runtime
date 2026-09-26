@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 	"github.com/inetaf/tcpproxy"
 	"go.uber.org/zap"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresssocks"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
@@ -77,7 +79,7 @@ func domainHandler(ctx context.Context, c egressConn) {
 	}
 
 	authority := egresstunnel.Authority(hostname, c.dstIP, c.dstPort)
-	if tunnelAdmitted(ctx, c, authority, matchType) {
+	if socksAdmitted(ctx, c, hostname, matchType) || tunnelAdmitted(ctx, c, authority, matchType) {
 		return
 	}
 
@@ -117,13 +119,87 @@ func cidrOnlyHandler(ctx context.Context, c egressConn) {
 		return
 	}
 
-	if tunnelAdmitted(ctx, c, egresstunnel.Authority("", c.dstIP, c.dstPort), matchType) {
+	if socksAdmitted(ctx, c, noHostnameValue, matchType) || tunnelAdmitted(ctx, c, egresstunnel.Authority("", c.dstIP, c.dstPort), matchType) {
 		return
 	}
 
 	c.metrics.RecordDecision(ctx, DecisionAllowed, c.protocol, matchType)
 
 	proxy(ctx, c, c.upstreamAddr())
+}
+
+// socksAdmitted tunnels an already-allowed flow through the sandbox SOCKS5
+// proxy (cloud BYOP). It is a peer of HBONE: egressProxy selects SOCKS5 and
+// does not use workload identity; otherwise IAM selects HBONE. Fail closed.
+func socksAdmitted(ctx context.Context, c egressConn, hostname string, matchType MatchType) bool {
+	cfg, ok := socksConfig(c.sbx)
+	if !ok {
+		return false
+	}
+
+	c.metrics.RecordDecision(ctx, DecisionTunneled, c.protocol, matchType)
+	tracker := c.metrics.TrackConnection(c.protocol)
+	defer tracker.Close(ctx)
+	defer c.conn.Close()
+
+	target := egresssocks.TargetFrom(hostname, c.dstIP, c.dstPort, matchType == MatchTypeDomain)
+	upstream, err := egresssocks.Dial(ctx, cfg, target)
+	if err != nil {
+		c.logger.Error(ctx, "egress SOCKS5 tunnel failed",
+			zap.Error(err),
+			zap.String("proxy", cfg.ProxyAddr),
+			zap.Bool("domain", target.Domain),
+		)
+		c.metrics.RecordError(ctx, ErrorTypeTunnel, c.protocol)
+
+		return true
+	}
+	defer upstream.Close()
+
+	if err := spliceConns(c.conn, upstream); err != nil {
+		c.logger.Error(ctx, "egress SOCKS5 splice failed", zap.Error(err))
+		c.metrics.RecordError(ctx, ErrorTypeTunnel, c.protocol)
+	}
+
+	return true
+}
+
+func socksConfig(sbx *sandbox.Sandbox) (egresssocks.Config, bool) {
+	if sbx == nil || sbx.APIStoredConfig == nil {
+		return egresssocks.Config{}, false
+	}
+	egress := sbx.APIStoredConfig.GetNetwork().GetEgress()
+	addr := egress.GetEgressProxyAddress()
+	if addr == "" {
+		return egresssocks.Config{}, false
+	}
+
+	return egresssocks.Config{
+		ProxyAddr:   addr,
+		Username:    egress.GetEgressProxyUsername(),
+		Password:    egress.GetEgressProxyPassword(),
+		DialTimeout: upstreamDialTimeout,
+	}, true
+}
+
+func spliceConns(a, b net.Conn) error {
+	errc := make(chan error, 2)
+	copy := func(dst, src net.Conn) {
+		_, err := io.Copy(dst, src)
+		errc <- err
+		_ = dst.Close()
+	}
+	go copy(a, b)
+	go copy(b, a)
+	err := <-errc
+	_ = a.Close()
+	_ = b.Close()
+	<-errc
+	if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
+		return err
+	}
+
+	return nil
 }
 
 func tunnelAdmitted(ctx context.Context, c egressConn, authority string, matchType MatchType) bool {

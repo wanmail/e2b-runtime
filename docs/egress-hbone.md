@@ -213,14 +213,20 @@ sees a complete ClientHello.
 
 ## 9. Interaction with BYOP
 
-If `egress_proxy_address` is set, current code may loosen kernel rules and
-hand TCP to a userspace SOCKS5 path (`SupportsBYOP` is false on OSS
-tcpfirewall today).
+HBONE and SOCKS5 are peers after the L4 allow decision. The sandbox config
+picks one tunnel; they are not stacked.
 
-v1: if BYOP is configured **and** IAM is set, **reject at API or fail closed
-on the node** (ambiguous: customer proxy vs platform identity). Do not CONNECT
-to Envoy and SOCKS5 the same flow. Track a follow-up: IAM ⇒ platform tunnel
-wins, BYOP ignored or admission error.
+| Config | Tunnel | Identity |
+|--------|--------|----------|
+| `network.egress.egress_proxy_address` set | SOCKS5 (RFC 1928/1929) to that proxy | username/password issued by the control plane. No workload identity. |
+| no egress proxy, `iam.tokens` set, node `EGRESS_GATEWAY_ADDR` set | HBONE | SPIFFE client cert |
+
+Domain-matched flows use SOCKS5 `ATYP=domain` (remote DNS). IP literals and
+CIDR-only flows use the original destination IP. If the proxy is unreachable
+or rejects the handshake, the guest connection fails closed.
+
+If both egress proxy and IAM are set, SOCKS5 wins for that sandbox: the
+explicit proxy config is the tunnel selection, and WI is not presented.
 
 ## 10. Observability
 
@@ -298,7 +304,7 @@ Envoy L7 is **not** included.
 | h2 CONNECT client, pool, splice | 1.5 | DialTLS vs `:authority` is the sharp edge |
 | tcpfirewall branch + DSCP + metrics | 0.7 | both domain and cidr handlers |
 | Unit + fake-h2 integration tests | 1.0 | peeked `tcpproxy.Conn` |
-| BYOP / IAM admission conflict | 0.3 | API 400 or node fail-closed |
+| SOCKS5 peer tunnel (cloud BYOP) | 0.5 | after L4 allow; user/pass identity, no WI |
 | Flag rollout + runbooks | 0.5 | |
 | **Runtime total** | **~5.3** | ~4–6 with review/CI |
 | Envoy inner MITM + JWT (other repo) | 2–4 | not this branch |
@@ -318,7 +324,7 @@ Risks that add time:
 2. CONNECT client against `httptest` HTTP/2
 3. Wire `ShouldTunnel` after allow; default flag off
 4. Metrics / limiter / pool teardown on `OnStopping`
-5. Admission: IAM + BYOP mutually exclusive
+5. SOCKS5 peer tunnel when `egress_proxy_address` is set (no WI)
 6. Envoy CONNECT-only soak (manual)
 
 Do not land JWT or MITM in `tcpfirewall`.

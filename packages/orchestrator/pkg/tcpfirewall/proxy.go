@@ -209,7 +209,7 @@ func (p *Proxy) CABundle() string {
 }
 
 func (p *Proxy) SupportsBYOP() bool {
-	return false
+	return true
 }
 
 // egressConn is one connection the proxy has admitted — past the per-sandbox
