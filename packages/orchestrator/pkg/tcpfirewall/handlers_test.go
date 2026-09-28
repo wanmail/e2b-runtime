@@ -138,6 +138,7 @@ func TestIsEgressAllowed(t *testing.T) {
 		network   *orchestrator.SandboxNetworkConfig
 		hostname  string
 		ip        net.IP
+		port      uint16
 		want      bool
 		wantError bool
 	}{
@@ -342,6 +343,179 @@ func TestIsEgressAllowed(t *testing.T) {
 		},
 
 		// ---------------------------------------------------------------------
+		// L4 allowPorts. Absent rules keep the cases above unchanged.
+		// ---------------------------------------------------------------------
+		{
+			name: "tcp port rule allows only the listed port",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 443,
+			want: true,
+		},
+		{
+			name: "tcp port rule blocks other ports on that peer",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 80,
+			want: false,
+		},
+		{
+			name: "tcp port rule does not restrict other peers",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+				},
+			},
+			ip:   net.ParseIP("8.8.8.8"),
+			port: 22,
+			want: true,
+		},
+		{
+			name: "legacy allowOut still allows every port",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedCidrs: []string{"1.2.3.4/32"},
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 22,
+			want: true,
+		},
+		{
+			name: "udp rule does not allow tcp",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "UDP",
+						Port:     uint32Ptr(53),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 53,
+			want: false,
+		},
+		{
+			name: "domain port rule allows matching hostname",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "example.com",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+					DeniedCidrs: []string{sandbox_network.AllInternetTrafficCIDR},
+				},
+			},
+			hostname: "example.com",
+			ip:       net.ParseIP("9.9.9.9"),
+			port:     443,
+			want:     true,
+		},
+		{
+			name: "deny UDP does not deny TCP",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					DeniedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "0.0.0.0/0",
+						Protocol: "UDP",
+					}},
+				},
+			},
+			ip:   net.ParseIP("8.8.8.8"),
+			port: 443,
+			want: true,
+		},
+		{
+			name: "deny TCP port blocks only that port",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					DeniedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(22),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 22,
+			want: false,
+		},
+		{
+			name: "deny TCP port leaves other ports open",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					DeniedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(22),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 443,
+			want: true,
+		},
+		{
+			name: "allowOut beats denyPorts",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedCidrs: []string{"1.2.3.4/32"},
+					DeniedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "1.2.3.4/32",
+						Protocol: "TCP",
+						Port:     uint32Ptr(22),
+					}},
+				},
+			},
+			ip:   net.ParseIP("1.2.3.4"),
+			port: 22,
+			want: true,
+		},
+		{
+			name: "domain port rule blocks a different port before deny",
+			network: &orchestrator.SandboxNetworkConfig{
+				Egress: &orchestrator.SandboxNetworkEgressConfig{
+					AllowedPorts: []*orchestrator.SandboxNetworkPortRule{{
+						Peer:     "example.com",
+						Protocol: "TCP",
+						Port:     uint32Ptr(443),
+					}},
+				},
+			},
+			hostname: "example.com",
+			ip:       net.ParseIP("9.9.9.9"),
+			port:     80,
+			want:     false,
+		},
+
+		// ---------------------------------------------------------------------
 		// Error Handling
 		// ---------------------------------------------------------------------
 		{
@@ -392,7 +566,7 @@ func TestIsEgressAllowed(t *testing.T) {
 				},
 			}
 
-			got, _, err := isEgressAllowed(sbx, tt.hostname, tt.ip)
+			got, _, err := isEgressAllowed(sbx, tt.hostname, tt.ip, tt.port)
 
 			if tt.wantError {
 				if err == nil {
@@ -414,6 +588,8 @@ func TestIsEgressAllowed(t *testing.T) {
 		})
 	}
 }
+
+func uint32Ptr(v uint32) *uint32 { return &v }
 
 func TestAlwaysDeniedCIDRs(t *testing.T) {
 	t.Parallel()

@@ -4,8 +4,10 @@ package network
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 
@@ -111,7 +113,9 @@ func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs 
 	}
 
 	// Install default rules and initial set data in a single flush.
-	fw.installRules(false)
+	if err := fw.installRules(false, nil, nil, nil); err != nil {
+		return nil, err
+	}
 	if err := fw.bufferUserRules(nil, nil); err != nil {
 		return nil, fmt.Errorf("error while configuring initial data: %w", err)
 	}
@@ -290,15 +294,20 @@ func (fw *Firewall) addTapDropRule() {
 
 // installRules buffers the filter chain rules. When byop is true, Rule 3 drops
 // non-TCP only (TCP shifts to the userspace SOCKS5 proxy); otherwise it drops
-// all protocols. Buffer-only; the caller must Flush.
-func (fw *Firewall) installRules(byop bool) {
+// all protocols. accepts are UDP/ICMP holes; dropCIDRs close other non-TCP to
+// port-scoped allow peers; denyDrops are UDP/ICMP denyPorts. Buffer-only; the
+// caller must Flush.
+func (fw *Firewall) installRules(byop bool, accepts []sandbox_network.EgressPortRule, dropCIDRs []string, denyDrops []sandbox_network.EgressPortRule) error {
 	// FILTER CHAIN (PREROUTING, priority -150)
 	//   1. ESTABLISHED/RELATED → accept
 	//   2. predefinedAllowSet → accept (all protocols)
 	//   3. predefinedDenySet → DROP (all protocols, or non-TCP only when byop)
-	//   4. Non-TCP: userAllowSet → accept
-	//   5. Non-TCP: userDenySet → DROP
-	//   6. Default: ACCEPT (TCP handled by iptables REDIRECT in host netns)
+	//   4. Non-TCP: userAllowSet → accept (legacy allowOut, all ports)
+	//   5. UDP/ICMP allowPorts → accept
+	//   6. Non-TCP to port-scoped allowPorts peers → DROP
+	//   7. UDP/ICMP denyPorts → DROP
+	//   8. Non-TCP: userDenySet → DROP (denyOut and all-protocol denyPorts)
+	//   9. Default: ACCEPT (TCP handled by iptables REDIRECT in host netns)
 
 	// Rule 1: Allow ESTABLISHED/RELATED connections - all protocols
 	// This ensures response packets are allowed even if the source is in predefinedDenySet
@@ -315,16 +324,185 @@ func (fw *Firewall) installRules(byop bool) {
 	}
 
 	// Rule 4: Non-TCP + userAllowSet → accept
-	// Only non-TCP traffic is affected; TCP goes to proxy
+	// Only non-TCP traffic is affected; TCP goes to proxy.
+	// Legacy allowOut wins over port-scoped drops below.
 	fw.addNonTCPSetFilterRule(fw.userAllowSet.Set(), false)
 
-	// Rule 5: Non-TCP + userDenySet → DROP
+	// Rule 5: UDP/ICMP allowPorts holes. TCP stays on the userspace proxy.
+	for _, rule := range accepts {
+		if err := fw.addL4AcceptRule(rule); err != nil {
+			return err
+		}
+	}
+
+	// Rule 6: peers that only appear in allowPorts are closed for other non-TCP.
+	for _, cidr := range dropCIDRs {
+		if err := fw.addNonTCPDestDrop(cidr); err != nil {
+			return err
+		}
+	}
+
+	// Rule 7: UDP/ICMP denyPorts. TCP denies are applied in the userspace proxy.
+	// Accepts above win, so an allowPorts hole beats a broader denyPorts.
+	for _, rule := range denyDrops {
+		if err := fw.addL4DropRule(rule); err != nil {
+			return err
+		}
+	}
+
+	// Rule 8: Non-TCP + userDenySet → DROP
 	// Only non-TCP traffic is affected; TCP goes to proxy
 	fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
 
 	// Default policy: ACCEPT
 	// - Non-TCP not in user sets: allowed (default policy)
 	// - TCP: iptables REDIRECT handles TCP traffic to proxy
+	return nil
+}
+
+func (fw *Firewall) addL4AcceptRule(rule sandbox_network.EgressPortRule) error {
+	return fw.addL4ProtoRule(rule, false)
+}
+
+func (fw *Firewall) addL4DropRule(rule sandbox_network.EgressPortRule) error {
+	return fw.addL4ProtoRule(rule, true)
+}
+
+func (fw *Firewall) addL4ProtoRule(rule sandbox_network.EgressPortRule, drop bool) error {
+	proto, err := l4ProtoNumber(rule.Protocol)
+	if err != nil {
+		return err
+	}
+	dest, err := ipv4DestMatch(rule.Peer)
+	if err != nil {
+		return err
+	}
+
+	exprs := append(fw.tapIfaceMatch(),
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+	)
+	exprs = append(exprs, dest...)
+	if rule.Protocol == sandbox_network.EgressProtoUDP && rule.Port != nil {
+		end := *rule.Port
+		if rule.EndPort != nil {
+			end = *rule.EndPort
+		}
+		exprs = append(exprs, transportDPortMatch(*rule.Port, end)...)
+	}
+	if drop {
+		exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictDrop})
+	} else {
+		exprs = append(exprs, accept()...)
+	}
+	fw.conn.AddRule(&nftables.Rule{
+		Table: fw.table,
+		Chain: fw.filterChain,
+		Exprs: exprs,
+	})
+
+	return nil
+}
+
+func (fw *Firewall) addNonTCPDestDrop(cidr string) error {
+	dest, err := ipv4DestMatch(cidr)
+	if err != nil {
+		return err
+	}
+
+	exprs := append(fw.tapIfaceMatch(),
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+	)
+	exprs = append(exprs, dest...)
+	exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictDrop})
+	fw.conn.AddRule(&nftables.Rule{
+		Table: fw.table,
+		Chain: fw.filterChain,
+		Exprs: exprs,
+	})
+
+	return nil
+}
+
+func l4ProtoNumber(protocol string) (byte, error) {
+	switch protocol {
+	case sandbox_network.EgressProtoUDP:
+		return unix.IPPROTO_UDP, nil
+	case sandbox_network.EgressProtoICMP:
+		return unix.IPPROTO_ICMP, nil
+	default:
+		return 0, fmt.Errorf("nftables L4 rule has protocol %q", protocol)
+	}
+}
+
+func ipv4DestMatch(cidr string) ([]expr.Any, error) {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid L4 CIDR %q: %w", cidr, err)
+	}
+	ip4 := network.IP.To4()
+	mask4 := net.IP(network.Mask).To4()
+	if ip4 == nil || mask4 == nil {
+		return nil, fmt.Errorf("L4 CIDR %q is not IPv4", cidr)
+	}
+	mask := net.IPMask(mask4)
+
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           mask,
+			Xor:            []byte{0, 0, 0, 0},
+		},
+		&expr.Cmp{Register: 1, Op: expr.CmpOpEq, Data: ip4.Mask(mask)},
+	}, nil
+}
+
+func transportDPortMatch(port, end uint32) []expr.Any {
+	load := &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2}
+	if end <= port {
+		return []expr.Any{
+			load,
+			&expr.Cmp{Register: 1, Op: expr.CmpOpEq, Data: htons(uint16(port))},
+		}
+	}
+
+	return []expr.Any{
+		load,
+		&expr.Range{
+			Register: 1,
+			Op:       expr.CmpOpEq,
+			FromData: htons(uint16(port)),
+			ToData:   htons(uint16(end)),
+		},
+	}
+}
+
+func htons(port uint16) []byte {
+	buf := make([]byte, 2)
+	binary.BigEndian.PutUint16(buf, port)
+
+	return buf
+}
+
+func mergeCIDRs(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, cidr := range append(append([]string{}, base...), extra...) {
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+
+	return out
 }
 
 // bufferUserRules buffers a full replacement of every firewall set.
@@ -365,7 +543,7 @@ func (fw *Firewall) bufferUserRules(allowedCIDRs, deniedCIDRs []string) error {
 //
 // On any failure the conn is replaced via resetConn, so a poisoned batch can
 // never leak into a later flush.
-func (fw *Firewall) ApplyRules(ctx context.Context, byop bool, allowedCIDRs, deniedCIDRs []string) (err error) {
+func (fw *Firewall) ApplyRules(ctx context.Context, byop bool, allowedCIDRs, deniedCIDRs []string, portRules, denyRules []sandbox_network.EgressPortRule) (err error) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
@@ -375,8 +553,15 @@ func (fw *Firewall) ApplyRules(ctx context.Context, byop bool, allowedCIDRs, den
 		}
 	}()
 
+	plan := sandbox_network.PlanNonTCP(portRules)
+	denyPlan := sandbox_network.PlanNonTCPDeny(denyRules)
+	allowedCIDRs = mergeCIDRs(allowedCIDRs, plan.AllowCIDRs)
+	deniedCIDRs = mergeCIDRs(deniedCIDRs, denyPlan.DenyCIDRs)
+
 	fw.conn.FlushChain(fw.filterChain)
-	fw.installRules(byop)
+	if err := fw.installRules(byop, plan.Accepts, plan.DropCIDRs, denyPlan.Drops); err != nil {
+		return err
+	}
 	if err := fw.bufferUserRules(allowedCIDRs, deniedCIDRs); err != nil {
 		return err
 	}

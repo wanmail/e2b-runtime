@@ -114,6 +114,17 @@ message SandboxNetworkDomainRules {
   repeated SandboxNetworkRule rules = 1;
 }
 
+// SandboxNetworkPortRule is one L4 allow or deny. An empty protocol and empty
+// port match every protocol and port for the peer. An empty protocol with a
+// port defaults to TCP. ICMP does not carry a port. Field numbers stay
+// additive so older templates that omit these lists are unchanged.
+message SandboxNetworkPortRule {
+  string peer = 1;
+  string protocol = 2;
+  optional uint32 port = 3;
+  optional uint32 end_port = 4;
+}
+
 message SandboxNetworkEgressConfig {
   repeated string allowed_cidrs = 1;
   repeated string denied_cidrs = 2;
@@ -124,6 +135,12 @@ message SandboxNetworkEgressConfig {
   string egress_proxy_address = 5;
   string egress_proxy_username = 6;
   string egress_proxy_password = 7;
+
+  // Optional L4 allows. Absent means legacy IP/CIDR/domain behavior.
+  repeated SandboxNetworkPortRule allowed_ports = 8;
+  // Optional L4 denies. A matching allow beats these. Absent leaves UDP/ICMP/TCP
+  // on the legacy denyOut (all protocols) plus default-allow path.
+  repeated SandboxNetworkPortRule denied_ports = 9;
 }
 
 message SandboxNetworkIngressConfig {

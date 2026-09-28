@@ -3,6 +3,8 @@ package types
 import (
 	"database/sql/driver"
 	"encoding/json"
+
+	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 )
 
 func jsonbValue(v any) (driver.Value, error) {
@@ -80,6 +82,13 @@ type SandboxNetworkEgressConfig struct {
 	EgressProxyAddress  string `json:"egressProxyAddress,omitempty"`
 	EgressProxyUsername string `json:"egressProxyUsername,omitempty"`
 	EgressProxyPassword string `json:"egressProxyPassword,omitempty"`
+
+	// AllowedPorts is the optional L4 allow list. Empty preserves legacy
+	// allowOut/denyOut behavior for snapshots written before the field existed.
+	AllowedPorts []sandbox_network.EgressPortRule `json:"allowedPorts,omitempty"`
+	// DeniedPorts is the optional L4 deny list. Empty leaves protocol-specific
+	// denies unset. A matching allow still wins.
+	DeniedPorts []sandbox_network.EgressPortRule `json:"deniedPorts,omitempty"`
 }
 
 const AllowPublicAccessDefault = true

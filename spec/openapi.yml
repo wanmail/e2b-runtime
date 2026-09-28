@@ -479,6 +479,40 @@ components:
           description: List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.
           items:
             type: string
+        allowPorts:
+          type: array
+          maxItems: 128
+          description: >
+            Optional L4 allow rules, shaped like Kubernetes NetworkPolicy ports.
+            Each rule allows one peer on a protocol and an optional inclusive port
+            range. Rules are OR'd with allowOut and use the same precedence: a
+            matching allow beats denyOut and denyPorts. Omitting allowPorts leaves existing
+            templates unchanged (allowOut remains every protocol and every port).
+            Omit both protocol and port to allow every protocol and port for that
+            peer. Protocol defaults to TCP when port is set. ICMP does not take a
+            port. UDP and ICMP peers must be IPv4 addresses or CIDRs; domain names
+            are only enforceable for TCP connections that expose a hostname
+            (HTTP Host or TLS SNI, ports 80 and 443). A peer that appears only in
+            allowPorts is limited to the listed protocol/port slices. The same
+            peer in allowOut stays open on every port. Other peers keep the
+            existing allow/deny/default-allow behavior.
+          items:
+            $ref: "#/components/schemas/SandboxNetworkPortRule"
+        denyPorts:
+          type: array
+          maxItems: 128
+          description: >
+            Optional L4 deny rules, same shape as allowPorts. A match denies that
+            protocol and port range without denying other protocols. Omit both
+            protocol and port to deny every protocol and port for the peer (same
+            as a denyOut entry). Protocol defaults to TCP when port is set. ICMP
+            does not take a port. UDP and ICMP peers must be IPv4 addresses or
+            CIDRs. Domain names are only enforceable for TCP. allowOut and a
+            matching allowPorts beat denyPorts. Omitting denyPorts leaves existing
+            templates unchanged. To deny UDP and leave TCP and ICMP on the current
+            policy, use [{"peer":"0.0.0.0/0","protocol":"UDP"}].
+          items:
+            $ref: "#/components/schemas/SandboxNetworkPortRule"
         egressProxy:
           $ref: "#/components/schemas/SandboxEgressProxyConfig"
         maskRequestHost:
@@ -524,6 +558,22 @@ components:
           description: List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.
           items:
             type: string
+        allowPorts:
+          type: array
+          maxItems: 128
+          description: >
+            Optional L4 allow rules. Replaces the current list when provided.
+            Omitting the field clears it. See SandboxNetworkConfig.allowPorts.
+          items:
+            $ref: "#/components/schemas/SandboxNetworkPortRule"
+        denyPorts:
+          type: array
+          maxItems: 128
+          description: >
+            Optional L4 deny rules. Replaces the current list when provided.
+            Omitting the field clears it. See SandboxNetworkConfig.denyPorts.
+          items:
+            $ref: "#/components/schemas/SandboxNetworkPortRule"
         egressProxy:
           $ref: "#/components/schemas/SandboxEgressProxyConfig"
         rules:
@@ -546,6 +596,37 @@ components:
           description:
             Allow sandbox to access the internet. When set to false, it behaves the same as specifying denyOut
             to 0.0.0.0/0 in the network config.
+
+    SandboxNetworkPortRule:
+      type: object
+      additionalProperties: false
+      required:
+        - peer
+      description: >
+        L4 allow for one egress peer. protocol is TCP, UDP, or ICMP
+        (case-insensitive). port and endPort are inclusive and required together
+        as a range; omit both to allow every port of the protocol.
+      properties:
+        peer:
+          type: string
+          description: >
+            CIDR block, bare IPv4 address, or domain name. Same grammar as an
+            allowOut entry. Domain names are TCP-only.
+        protocol:
+          type: string
+          description: TCP, UDP, or ICMP. Defaults to TCP when port is set.
+        port:
+          type: integer
+          format: uint32
+          minimum: 1
+          maximum: 65535
+          description: Start of the destination port range. Not valid for ICMP.
+        endPort:
+          type: integer
+          format: uint32
+          minimum: 1
+          maximum: 65535
+          description: Inclusive end of the destination port range. Requires port.
 
     SandboxNetworkRule:
       type: object

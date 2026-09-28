@@ -30,12 +30,16 @@ func (o *Orchestrator) UpdateSandboxNetworkConfig(
 	rules map[string][]types.SandboxNetworkRule,
 	allowInternetAccess *bool,
 	egressProxy *sandbox_network.EgressProxyConfig,
+	portRules []sandbox_network.EgressPortRule,
+	denyRules []sandbox_network.EgressPortRule,
 ) *api.APIError {
-	// PUT is full-replace: omitting egressProxy clears BYOP.
+	// PUT is full-replace: omitting egressProxy, allowPorts, and denyPorts clears them.
 	egressConfig := &types.SandboxNetworkEgressConfig{
 		AllowedAddresses: allowedEntries,
 		DeniedAddresses:  deniedEntries,
 		Rules:            rules,
+		AllowedPorts:     portRules,
+		DeniedPorts:      denyRules,
 	}
 	if egressProxy != nil {
 		egressConfig.EgressProxyAddress = egressProxy.Address

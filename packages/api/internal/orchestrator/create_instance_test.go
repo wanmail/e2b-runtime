@@ -27,6 +27,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/machineinfo"
 	redis_utils "github.com/e2b-dev/infra/packages/shared/pkg/redis"
 	e2bcatalog "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-catalog"
+	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/smap"
 )
 
@@ -118,12 +119,29 @@ func TestBuildEgressConfigPreservesWildcardRuleKey(t *testing.T) {
 	const domain = "*.github.com"
 	config := buildEgressConfig(nil, nil, map[string][]dbtypes.SandboxNetworkRule{
 		domain: {{Transform: &dbtypes.SandboxNetworkTransform{Headers: map[string]string{"X-Test": "value"}}}},
-	})
+	}, nil, nil)
 
 	rules, ok := config.GetRules()[domain]
 	require.True(t, ok)
 	require.Len(t, rules.GetRules(), 1)
 	assert.Equal(t, "value", rules.GetRules()[0].GetTransform().GetHeaders()["X-Test"])
+}
+
+func TestBuildEgressConfigDomainPortRuleAddsNameserver(t *testing.T) {
+	t.Parallel()
+
+	port := uint32(443)
+	config := buildEgressConfig(nil, []string{sandbox_network.AllInternetTrafficCIDR}, nil, []sandbox_network.EgressPortRule{{
+		Peer:     "example.com",
+		Protocol: sandbox_network.EgressProtoTCP,
+		Port:     &port,
+	}}, nil)
+
+	assert.Contains(t, config.GetAllowedCidrs(), sandbox_network.DefaultNameserver+"/32")
+	assert.Empty(t, config.GetAllowedDomains())
+	require.Len(t, config.GetAllowedPorts(), 1)
+	assert.Equal(t, "example.com", config.GetAllowedPorts()[0].GetPeer())
+	assert.Equal(t, uint32(443), config.GetAllowedPorts()[0].GetPort())
 }
 
 func TestBuildNetworkConfigHTTPSPorts(t *testing.T) {

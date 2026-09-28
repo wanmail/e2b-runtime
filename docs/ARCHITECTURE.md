@@ -243,14 +243,19 @@ Key mechanisms (all under `pkg/sandbox/`):
   on local disk (and optionally on a shared NFS chunk cache, or fetched peer-to-peer from other
   nodes before upload completes).
 - **Networking** (`network/`): each sandbox gets a slot — a network namespace with a veth pair
-  and a tap device, unique host-side IP (from a /16), NAT, and per-slot nftables egress firewall
-  (with SNI/Host-inspecting TCP firewall for domain allow/deny lists). Slots are pooled and
-  reused; slot indexes are allocated locally against the node's netns state (leftover
-  namespaces from a previous run are torn down by startup reclaim).
-  Proposed: sandboxes with `iam.tokens` tunnel admitted TCP to a platform Envoy via HTTP/2
-  CONNECT and a per-execution SPIFFE client cert (HBONE subset). L7 JWT stays on the gateway.
-  Design: [egress-hbone.md](./egress-hbone.md). Local API e2e:
-  `packages/orchestrator/dev/egresstunnel/e2e/README.md`.
+  and a tap device. Firecracker only owns the virtio NIC and the `tap0` fd it is given.
+  The slot netns, `slot-firewall`, TCP redirect, and tunnels are E2B, on the host: the guest
+  virtio NIC ends at `tap0`, the filter matches packets there, and the veth's other end sits in
+  the host namespace. Each slot has a unique host-side IP (from a /16) and NAT.
+  nftables and iptables are stock kernel netfilter; the node only parses config and installs
+  rules over netlink. TCP is redirected into a userspace firewall that reads Host/SNI; admitted
+  TCP may then use SOCKS5 or HBONE. UDP and ICMP stay in nftables and are not tunneled.
+  Optional `allowPorts` / `denyPorts` add protocol and port rules without changing templates
+  that omit them.
+  Slots are pooled and reused; slot indexes are allocated locally against the node's netns
+  state (leftover namespaces from a previous run are torn down by startup reclaim).
+  Path: [egress-path.md](./egress-path.md). HBONE wire protocol: [egress-hbone.md](./egress-hbone.md).
+  Local API e2e: `packages/orchestrator/dev/egresstunnel/e2e/README.md`.
 - **Sandbox proxy** (:5007, `pkg/proxy/`): reverse-proxies incoming traffic from client-proxy to
   the sandbox's slot IP and requested port over HTTP or configured HTTPS, enforcing per-sandbox
   traffic access tokens. HTTPS backends may use self-signed certificates.

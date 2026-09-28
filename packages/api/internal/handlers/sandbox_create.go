@@ -282,6 +282,21 @@ func (a *APIStore) createSandbox(c *gin.Context, body api.NewSandbox, defaultTim
 			return
 		}
 
+		portRules, portErr := normalizeAPIPortRules("allowPorts", n.AllowPorts)
+		if portErr != nil {
+			telemetry.ReportError(ctx, "invalid network config", portErr.Err, telemetry.WithSandboxID(sandboxID))
+			a.sendAPIStoreError(c, portErr.Code, portErr.ClientMsg)
+
+			return
+		}
+		denyRules, portErr := normalizeAPIPortRules("denyPorts", n.DenyPorts)
+		if portErr != nil {
+			telemetry.ReportError(ctx, "invalid network config", portErr.Err, telemetry.WithSandboxID(sandboxID))
+			a.sendAPIStoreError(c, portErr.Code, portErr.ClientMsg)
+
+			return
+		}
+
 		network = &types.SandboxNetworkConfig{
 			Ingress: &types.SandboxNetworkIngressConfig{
 				AllowPublicAccess: n.AllowPublicTraffic,
@@ -292,6 +307,8 @@ func (a *APIStore) createSandbox(c *gin.Context, body api.NewSandbox, defaultTim
 				AllowedAddresses: sharedUtils.DerefOrDefault(n.AllowOut, nil),
 				DeniedAddresses:  sharedUtils.DerefOrDefault(n.DenyOut, nil),
 				Rules:            apiRulesToDBRules(n.Rules),
+				AllowedPorts:     portRules,
+				DeniedPorts:      denyRules,
 			},
 		}
 
@@ -822,8 +839,44 @@ func validateNetworkConfig(ctx context.Context, featureFlags featureFlagsClient,
 	if err := validateEgressRules(allowOut, denyOut); err != nil {
 		return err
 	}
+	if _, err := normalizeAPIPortRules("allowPorts", network.AllowPorts); err != nil {
+		return err
+	}
+	if _, err := normalizeAPIPortRules("denyPorts", network.DenyPorts); err != nil {
+		return err
+	}
 
 	return validateNetworkRules(ctx, featureFlags, teamID, envdVersion, maxDomains, network.Rules)
+}
+
+func normalizeAPIPortRules(field string, rules *[]api.SandboxNetworkPortRule) ([]sandbox_network.EgressPortRule, *api.APIError) {
+	if rules == nil {
+		return nil, nil
+	}
+
+	in := make([]sandbox_network.EgressPortRule, 0, len(*rules))
+	for _, rule := range *rules {
+		item := sandbox_network.EgressPortRule{
+			Peer:    rule.Peer,
+			Port:    rule.Port,
+			EndPort: rule.EndPort,
+		}
+		if rule.Protocol != nil {
+			item.Protocol = *rule.Protocol
+		}
+		in = append(in, item)
+	}
+
+	normalized, err := sandbox_network.NormalizeEgressPortList(field, in)
+	if err != nil {
+		return nil, &api.APIError{
+			Code:      http.StatusBadRequest,
+			Err:       err,
+			ClientMsg: err.Error(),
+		}
+	}
+
+	return normalized, nil
 }
 
 // validateEgressRules validates egress allow/deny rules:

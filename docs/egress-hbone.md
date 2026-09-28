@@ -1,5 +1,8 @@
 # Sandbox egress HBONE tunnel (design)
 
+The packet path (VM tap → nftables → TCP redirect → firewall → tunnel choice) is
+[egress-path.md](./egress-path.md). This document is only the HBONE hop.
+
 Status: in progress on `feat/egress-hbone-tunnel`. Node-side CONNECT + mTLS is implemented in
 `packages/orchestrator/pkg/egresstunnel`. Envoy L7 remains out of scope.
 
@@ -199,12 +202,13 @@ HandleConn
   getOriginalDst
   domainHandler / cidrOnlyHandler
     isEgressAllowed → false: close
-    ShouldTunnel(sbx):
+    egressProxy set → SOCKS5 (see egress-path.md)
+    else ShouldTunnel(sbx):
       origAuthority = host:port or ip:port
       stream = pool.Connect(ctx, sbx, origAuthority)
       splice(guestConn, stream)   // peeked bytes already replayed by tcpproxy.Conn
     else:
-      proxy / proxyWithIPVerification  // unchanged
+      proxy / proxyWithIPVerification
 ```
 
 `tcpproxy.Conn.Read` replays peeked Host/SNI bytes; splice must use `c.conn`

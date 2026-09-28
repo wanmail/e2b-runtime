@@ -259,6 +259,53 @@ func TestValidateNetworkConfig(t *testing.T) {
 			wantErrMsg: ErrMsgDomainsRequireBlockAll,
 		},
 		{
+			name: "allowPorts tcp port is valid without changing allowOut",
+			network: &api.SandboxNetworkConfig{
+				AllowPorts: &[]api.SandboxNetworkPortRule{{
+					Peer:     "8.8.8.8",
+					Protocol: strPtr("udp"),
+					Port:     uint32Ptr(53),
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "denyPorts udp on all addresses is valid",
+			network: &api.SandboxNetworkConfig{
+				DenyPorts: &[]api.SandboxNetworkPortRule{{
+					Peer:     "0.0.0.0/0",
+					Protocol: strPtr("UDP"),
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "denyPorts udp domain is invalid",
+			network: &api.SandboxNetworkConfig{
+				DenyPorts: &[]api.SandboxNetworkPortRule{{
+					Peer:     "example.com",
+					Protocol: strPtr("UDP"),
+				}},
+			},
+			wantErr:    true,
+			wantCode:   http.StatusBadRequest,
+			wantErrMsg: "denyPorts[0]: peer \"example.com\" is a domain, which only supports TCP",
+		},
+		{
+			name: "allowPorts udp domain is invalid",
+			network: &api.SandboxNetworkConfig{
+				AllowPorts: &[]api.SandboxNetworkPortRule{{
+					Peer:     "example.com",
+					Protocol: strPtr("UDP"),
+					Port:     uint32Ptr(53),
+				}},
+				DenyOut: &[]string{sandbox_network.AllInternetTrafficCIDR},
+			},
+			wantErr:    true,
+			wantCode:   http.StatusBadRequest,
+			wantErrMsg: "allowPorts[0]: peer \"example.com\" is a domain, which only supports TCP",
+		},
+		{
 			name: "allow_out with domain and block-all deny_out is valid",
 			network: &api.SandboxNetworkConfig{
 				AllowOut: &[]string{"example.com"},
@@ -1455,3 +1502,7 @@ func createTestTemplateAliasWithName(ctx context.Context, t *testing.T, db *test
 	)
 	require.NoError(t, err)
 }
+
+func strPtr(v string) *string { return &v }
+
+func uint32Ptr(v uint32) *uint32 { return &v }

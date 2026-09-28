@@ -16,6 +16,7 @@ import (
 	dbtypes "github.com/e2b-dev/infra/packages/db/pkg/types"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
@@ -53,6 +54,12 @@ func dbNetworkConfigToAPI(network *dbtypes.SandboxNetworkConfig) *api.SandboxNet
 
 		if egress.DeniedAddresses != nil {
 			result.DenyOut = &egress.DeniedAddresses
+		}
+		if ports := dbPortRulesToAPI(egress.AllowedPorts); ports != nil {
+			result.AllowPorts = ports
+		}
+		if ports := dbPortRulesToAPI(egress.DeniedPorts); ports != nil {
+			result.DenyPorts = ports
 		}
 
 		if egress.Rules != nil {
@@ -92,6 +99,28 @@ func dbNetworkConfigToAPI(network *dbtypes.SandboxNetworkConfig) *api.SandboxNet
 	}
 
 	return result
+}
+
+func dbPortRulesToAPI(rules []sandbox_network.EgressPortRule) *[]api.SandboxNetworkPortRule {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	out := make([]api.SandboxNetworkPortRule, 0, len(rules))
+	for _, rule := range rules {
+		item := api.SandboxNetworkPortRule{
+			Peer:    rule.Peer,
+			Port:    rule.Port,
+			EndPort: rule.EndPort,
+		}
+		if rule.Protocol != "" {
+			protocol := rule.Protocol
+			item.Protocol = &protocol
+		}
+		out = append(out, item)
+	}
+
+	return &out
 }
 
 func (a *APIStore) GetSandboxesSandboxID(c *gin.Context, id string) {

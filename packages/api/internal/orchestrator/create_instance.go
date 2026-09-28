@@ -101,10 +101,10 @@ func iamToProto(iam *types.SandboxIam) *orchestrator.SandboxIam {
 // allow/deny entry lists. It splits allowed entries into CIDRs and domains,
 // and adds the default nameserver when domains are present so the sandbox can
 // resolve them.
-func buildEgressConfig(allowedEntries, deniedEntries []string, rules map[string][]types.SandboxNetworkRule) *orchestrator.SandboxNetworkEgressConfig {
+func buildEgressConfig(allowedEntries, deniedEntries []string, rules map[string][]types.SandboxNetworkRule, portRules, denyRules []sandbox_network.EgressPortRule) *orchestrator.SandboxNetworkEgressConfig {
 	allowedAddresses, allowedDomains := sandbox_network.ParseAddressesAndDomains(allowedEntries)
 
-	if len(allowedDomains) > 0 {
+	if len(allowedDomains) > 0 || sandbox_network.HasDomainPeer(portRules) {
 		allowedAddresses = append(allowedAddresses, sandbox_network.DefaultNameserver)
 	}
 
@@ -131,7 +131,28 @@ func buildEgressConfig(allowedEntries, deniedEntries []string, rules map[string]
 		DeniedCidrs:    sandbox_network.AddressStringsToCIDRs(deniedEntries),
 		AllowedDomains: allowedDomains,
 		Rules:          orchRules,
+		AllowedPorts:   protoPortRules(portRules),
+		DeniedPorts:    protoPortRules(denyRules),
 	}
+}
+
+func protoPortRules(rules []sandbox_network.EgressPortRule) []*orchestrator.SandboxNetworkPortRule {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	out := make([]*orchestrator.SandboxNetworkPortRule, 0, len(rules))
+	for _, rule := range rules {
+		item := &orchestrator.SandboxNetworkPortRule{
+			Peer:     rule.Peer,
+			Protocol: rule.Protocol,
+			Port:     rule.Port,
+			EndPort:  rule.EndPort,
+		}
+		out = append(out, item)
+	}
+
+	return out
 }
 
 // applyEgressProxy copies BYOP SOCKS5 fields from src to dst. No-op on nil.
@@ -154,7 +175,7 @@ func buildNetworkConfig(network *types.SandboxNetworkConfig, allowInternetAccess
 	}
 
 	if network != nil && network.Egress != nil {
-		egress := buildEgressConfig(network.Egress.AllowedAddresses, network.Egress.DeniedAddresses, network.Egress.Rules)
+		egress := buildEgressConfig(network.Egress.AllowedAddresses, network.Egress.DeniedAddresses, network.Egress.Rules, network.Egress.AllowedPorts, network.Egress.DeniedPorts)
 		applyEgressProxy(egress, network.Egress)
 		orchNetwork.Egress = egress
 	}

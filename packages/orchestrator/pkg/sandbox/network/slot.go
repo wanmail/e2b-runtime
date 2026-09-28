@@ -21,6 +21,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
+	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 )
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network")
@@ -351,6 +352,45 @@ func (s *Slot) applyEgressDSCP(ctx context.Context, dscp uint8) error {
 	return nil
 }
 
+// EgressPortRules copies proto allowPorts into the shared L4 type.
+func EgressPortRules(egress *orchestrator.SandboxNetworkEgressConfig) []sandbox_network.EgressPortRule {
+	if egress == nil {
+		return nil
+	}
+
+	return portRulesFromProto(egress.GetAllowedPorts())
+}
+
+// EgressDenyPortRules copies proto denyPorts into the shared L4 type.
+func EgressDenyPortRules(egress *orchestrator.SandboxNetworkEgressConfig) []sandbox_network.EgressPortRule {
+	if egress == nil {
+		return nil
+	}
+
+	return portRulesFromProto(egress.GetDeniedPorts())
+}
+
+func portRulesFromProto(in []*orchestrator.SandboxNetworkPortRule) []sandbox_network.EgressPortRule {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make([]sandbox_network.EgressPortRule, 0, len(in))
+	for _, rule := range in {
+		if rule == nil {
+			continue
+		}
+		out = append(out, sandbox_network.EgressPortRule{
+			Peer:     rule.GetPeer(),
+			Protocol: rule.GetProtocol(),
+			Port:     rule.Port,
+			EndPort:  rule.EndPort,
+		})
+	}
+
+	return out
+}
+
 func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.SandboxNetworkConfig) (e error) {
 	ctx, span := tracer.Start(ctx, "slot-internet-configure", trace.WithAttributes(
 		attribute.String("namespace_id", s.NamespaceID()),
@@ -360,7 +400,9 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 	egress := network.GetEgress()
 	hasUserRules := len(egress.GetAllowedCidrs()) != 0 ||
 		len(egress.GetDeniedCidrs()) != 0 ||
-		len(egress.GetAllowedDomains()) != 0
+		len(egress.GetAllowedDomains()) != 0 ||
+		len(egress.GetAllowedPorts()) != 0 ||
+		len(egress.GetDeniedPorts()) != 0
 	hasBYOP := egress.GetEgressProxyAddress() != ""
 
 	if !hasUserRules && !hasBYOP {
@@ -377,7 +419,7 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 	defer n.Close()
 
 	err = n.Do(func(_ ns.NetNS) error {
-		return s.Firewall.ApplyRules(ctx, hasBYOP, egress.GetAllowedCidrs(), egress.GetDeniedCidrs())
+		return s.Firewall.ApplyRules(ctx, hasBYOP, egress.GetAllowedCidrs(), egress.GetDeniedCidrs(), EgressPortRules(egress), EgressDenyPortRules(egress))
 	})
 	if err != nil {
 		return fmt.Errorf("failed execution in network namespace '%s': %w", s.NamespaceID(), err)
@@ -416,7 +458,7 @@ func (s *Slot) UpdateInternet(ctx context.Context, egress *orchestrator.SandboxN
 	s.firewallCustomRules.Store(true)
 
 	err = n.Do(func(_ ns.NetNS) error {
-		return s.Firewall.ApplyRules(ctx, hasBYOP, allowedCIDRs, deniedCIDRs)
+		return s.Firewall.ApplyRules(ctx, hasBYOP, allowedCIDRs, deniedCIDRs, EgressPortRules(egress), EgressDenyPortRules(egress))
 	})
 	if err != nil {
 		return fmt.Errorf("failed execution in network namespace '%s': %w", s.NamespaceID(), err)
@@ -478,7 +520,7 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 
 	err = n.Do(func(_ ns.NetNS) error {
 		// Revert BYOP so the next tenant can't inherit non-TCP-only deny rules.
-		return s.Firewall.ApplyRules(ctx, false, nil, nil)
+		return s.Firewall.ApplyRules(ctx, false, nil, nil, nil, nil)
 	})
 	if err != nil {
 		return fmt.Errorf("failed execution in network namespace '%s': %w", s.NamespaceID(), err)

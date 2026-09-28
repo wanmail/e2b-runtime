@@ -1196,11 +1196,17 @@ type SandboxNetworkConfig struct {
 	// AllowOut List of allowed destinations for egress traffic. Each entry can be a CIDR block (e.g. "8.8.8.8/32"), a bare IP address (e.g. "8.8.8.8"), or a domain name (e.g. "example.com", "*.example.com"). Allowed entries always take precedence over denied entries.
 	AllowOut *[]string `json:"allowOut,omitempty"`
 
+	// AllowPorts Optional L4 allow rules, shaped like Kubernetes NetworkPolicy ports. Each rule allows one peer on a protocol and an optional inclusive port range. Rules are OR'd with allowOut and use the same precedence: a matching allow beats denyOut and denyPorts. Omitting allowPorts leaves existing templates unchanged (allowOut remains every protocol and every port). Omit both protocol and port to allow every protocol and port for that peer. Protocol defaults to TCP when port is set. ICMP does not take a port. UDP and ICMP peers must be IPv4 addresses or CIDRs; domain names are only enforceable for TCP connections that expose a hostname (HTTP Host or TLS SNI, ports 80 and 443). A peer that appears only in allowPorts is limited to the listed protocol/port slices. The same peer in allowOut stays open on every port. Other peers keep the existing allow/deny/default-allow behavior.
+	AllowPorts *[]SandboxNetworkPortRule `json:"allowPorts,omitempty"`
+
 	// AllowPublicTraffic Specify if the sandbox URLs should be accessible only with authentication.
 	AllowPublicTraffic *bool `json:"allowPublicTraffic,omitempty"`
 
 	// DenyOut List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.
 	DenyOut *[]string `json:"denyOut,omitempty"`
+
+	// DenyPorts Optional L4 deny rules, same shape as allowPorts. A match denies that protocol and port range without denying other protocols. Omit both protocol and port to deny every protocol and port for the peer (same as a denyOut entry). Protocol defaults to TCP when port is set. ICMP does not take a port. UDP and ICMP peers must be IPv4 addresses or CIDRs. Domain names are only enforceable for TCP. allowOut and a matching allowPorts beat denyPorts. Omitting denyPorts leaves existing templates unchanged. To deny UDP and leave TCP and ICMP on the current policy, use [{"peer":"0.0.0.0/0","protocol":"UDP"}].
+	DenyPorts *[]SandboxNetworkPortRule `json:"denyPorts,omitempty"`
 
 	// EgressProxy SOCKS5 proxy for sandbox egress. Outbound TCP is tunneled through the proxy after allow/deny filtering; the sandbox is unaware. Domain-matched flows use remote DNS (ATYP=domain).
 	EgressProxy *SandboxEgressProxyConfig `json:"egressProxy,omitempty"`
@@ -1213,6 +1219,21 @@ type SandboxNetworkConfig struct {
 
 	// Rules Per-domain transform rules applied to matching outbound HTTPS requests. Keys may be exact DNS names (for example, "api.example.com") or a leading wildcard (for example, "*.example.com"), and are normalized to lowercase on write. Wildcards match subdomains at any depth but not the apex domain; a bare "*" is invalid. Exact rules take precedence, followed by the longest matching wildcard suffix, and matching rule sets are not merged. Broad wildcards such as "*.com" are allowed and may expose transformed credentials to every matching destination the sandbox contacts. Rules do not grant network access; configure allowOut separately to permit the destination.
 	Rules *map[string][]SandboxNetworkRule `json:"rules,omitempty"`
+}
+
+// SandboxNetworkPortRule L4 allow for one egress peer. protocol is TCP, UDP, or ICMP (case-insensitive). port and endPort are inclusive and required together as a range; omit both to allow every port of the protocol.
+type SandboxNetworkPortRule struct {
+	// EndPort Inclusive end of the destination port range. Requires port.
+	EndPort *uint32 `json:"endPort,omitempty"`
+
+	// Peer CIDR block, bare IPv4 address, or domain name. Same grammar as an allowOut entry. Domain names are TCP-only.
+	Peer string `json:"peer"`
+
+	// Port Start of the destination port range. Not valid for ICMP.
+	Port *uint32 `json:"port,omitempty"`
+
+	// Protocol TCP, UDP, or ICMP. Defaults to TCP when port is set.
+	Protocol *string `json:"protocol,omitempty"`
 }
 
 // SandboxNetworkRule Transform rule applied to egress requests matching a domain pattern.
@@ -1232,11 +1253,17 @@ type SandboxNetworkUpdateConfig struct {
 	// AllowOut List of allowed destinations for egress traffic. Each entry can be a CIDR block (e.g. "8.8.8.8/32"), a bare IP address (e.g. "8.8.8.8"), or a domain name (e.g. "example.com", "*.example.com"). Allowed entries always take precedence over denied entries.
 	AllowOut *[]string `json:"allowOut,omitempty"`
 
+	// AllowPorts Optional L4 allow rules. Replaces the current list when provided. Omitting the field clears it. See SandboxNetworkConfig.allowPorts.
+	AllowPorts *[]SandboxNetworkPortRule `json:"allowPorts,omitempty"`
+
 	// AllowInternetAccess Allow sandbox to access the internet. When set to false, it behaves the same as specifying denyOut to 0.0.0.0/0 in the network config.
 	AllowInternetAccess *bool `json:"allow_internet_access,omitempty"`
 
 	// DenyOut List of denied CIDR blocks or IP addresses for egress traffic. Domain names are not supported for deny rules.
 	DenyOut *[]string `json:"denyOut,omitempty"`
+
+	// DenyPorts Optional L4 deny rules. Replaces the current list when provided. Omitting the field clears it. See SandboxNetworkConfig.denyPorts.
+	DenyPorts *[]SandboxNetworkPortRule `json:"denyPorts,omitempty"`
 
 	// EgressProxy SOCKS5 proxy for sandbox egress. Outbound TCP is tunneled through the proxy after allow/deny filtering; the sandbox is unaware. Domain-matched flows use remote DNS (ATYP=domain).
 	EgressProxy *SandboxEgressProxyConfig `json:"egressProxy,omitempty"`

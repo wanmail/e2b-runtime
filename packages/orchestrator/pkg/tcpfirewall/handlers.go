@@ -18,6 +18,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresssocks"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/egresstunnel"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/sandboxtypes"
 )
@@ -62,7 +63,7 @@ func domainHandler(ctx context.Context, c egressConn) {
 		hostname = tc.HostName
 	}
 
-	allowed, matchType, err := isEgressAllowed(c.sbx, hostname, c.dstIP)
+	allowed, matchType, err := isEgressAllowed(c.sbx, hostname, c.dstIP, destPort(c.dstPort))
 	if err != nil {
 		c.logger.Error(ctx, "Egress check failed", zap.Error(err))
 		c.metrics.RecordError(ctx, ErrorTypeEgressCheck, c.protocol)
@@ -103,7 +104,7 @@ func domainHandler(ctx context.Context, c egressConn) {
 // cidrOnlyHandler handles connections without hostname information.
 func cidrOnlyHandler(ctx context.Context, c egressConn) {
 	// No hostname available for CIDR-only handler
-	allowed, matchType, err := isEgressAllowed(c.sbx, noHostnameValue, c.dstIP)
+	allowed, matchType, err := isEgressAllowed(c.sbx, noHostnameValue, c.dstIP, destPort(c.dstPort))
 	if err != nil {
 		c.logger.Error(ctx, "Egress check failed", zap.Error(err))
 		c.metrics.RecordError(ctx, ErrorTypeEgressCheck, c.protocol)
@@ -309,13 +310,18 @@ func proxyWithIPVerification(ctx context.Context, c egressConn, upstreamAddr str
 	dp.HandleConn(c.conn)
 }
 
-// isEgressAllowed checks if egress is allowed based on domain and CIDR rules.
+// isEgressAllowed checks if egress is allowed based on domain, CIDR, and L4 rules.
 // Returns the allowed status and the match type for metrics.
 // Priority order:
-//  1. Allow domain / Allow CIDR (if either matches → allow)
-//  2. Deny domain / Deny CIDR (if either matches → deny)
-//  3. Default: allow
-func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP) (bool, MatchType, error) {
+//  1. Allow domain / Allow CIDR (if either matches → allow, every port)
+//  2. allowPorts whose protocol and port match (allow beats deny)
+//  3. denyPorts whose protocol and port match → deny
+//  4. Deny CIDR (if it matches → deny, every protocol)
+//  5. allowPorts selected the peer but not this TCP port → deny
+//  6. Default: allow
+//
+// Absent allowPorts and denyPorts leaves steps 2, 3, and 5 idle.
+func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP, dstPort uint16) (bool, MatchType, error) {
 	egress := sbx.Config.GetNetworkEgress()
 	if egress == nil {
 		// No egress configuration, allow all traffic.
@@ -343,6 +349,30 @@ func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP) (bool, Ma
 		}
 	}
 
+	decision, err := sandbox_network.EvalTCPPortRules(network.EgressPortRules(egress), hostname, ip, dstPort)
+	if err != nil {
+		return false, MatchTypeNone, err
+	}
+	if decision.Allowed {
+		if decision.Domain {
+			return true, MatchTypeDomain, nil
+		}
+
+		return true, MatchTypeCIDR, nil
+	}
+
+	denyDecision, err := sandbox_network.EvalTCPDenyRules(network.EgressDenyPortRules(egress), hostname, ip, dstPort)
+	if err != nil {
+		return false, MatchTypeNone, err
+	}
+	if denyDecision.Denied {
+		if denyDecision.Domain {
+			return false, MatchTypeDomain, nil
+		}
+
+		return false, MatchTypeCIDR, nil
+	}
+
 	// Priority 2: Check denied CIDRs
 	for _, cidr := range egress.GetDeniedCidrs() {
 		_, ipNet, err := net.ParseCIDR(cidr)
@@ -355,8 +385,25 @@ func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP) (bool, Ma
 		}
 	}
 
+	// A peer that exists only in allowPorts is limited to the listed TCP slices.
+	if decision.Restricted {
+		if decision.Domain {
+			return false, MatchTypeDomain, nil
+		}
+
+		return false, MatchTypeCIDR, nil
+	}
+
 	// Default: allow all traffic.
 	return true, MatchTypeNone, nil
+}
+
+func destPort(port int) uint16 {
+	if port <= 0 || port > 65535 {
+		return 0
+	}
+
+	return uint16(port)
 }
 
 // matchDomain checks if a hostname matches a domain pattern.
